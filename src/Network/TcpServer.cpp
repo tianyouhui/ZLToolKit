@@ -160,9 +160,17 @@ Session::Ptr TcpServer::onAcceptConnection(const Socket::Ptr &sock) {
         if (strong_session) {
             //触发onError事件回调
             strong_session->onError(err);
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                return;
+            }
+            strong_self->onCloseConnection(strong_session);
         }
     });
     return session;
+}
+
+void TcpServer::onCloseConnection(const Session::Ptr& session) {
 }
 
 void TcpServer::start_l(uint16_t port, const std::string &host, uint32_t backlog) {

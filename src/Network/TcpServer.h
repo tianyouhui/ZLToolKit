@@ -74,6 +74,7 @@ protected:
     virtual TcpServer::Ptr onCreatServer(const EventPoller::Ptr &poller);
 
     virtual Session::Ptr onAcceptConnection(const Socket::Ptr &sock);
+    virtual void onCloseConnection(const Session::Ptr &session);
     virtual Socket::Ptr onBeforeAcceptConnection(const EventPoller::Ptr &poller);
 
 private:
