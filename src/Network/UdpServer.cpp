@@ -44,14 +44,20 @@ static UdpServer::PeerIdType makeSockId(sockaddr *addr, int) {
 
 UdpServer::UdpServer(const EventPoller::Ptr &poller) : Server(poller) {
     setOnCreateSocket(nullptr);
+}
+
+void UdpServer::setupEvent() {
     _socket = createSocket(_poller);
-    _socket->setOnRead([this](const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
-        onRead(buf, addr, addr_len);
+    std::weak_ptr<UdpServer> weak_self = std::dynamic_pointer_cast<UdpServer>(shared_from_this());
+    _socket->setOnRead([weak_self](const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
+        if (auto strong_self = weak_self.lock()) {
+            strong_self->onRead(buf, addr, addr_len);
+        }
     });
 }
 
 UdpServer::~UdpServer() {
-    if (!_cloned && _socket->rawFD() != -1) {
+    if (!_cloned && _socket && _socket->rawFD() != -1) {
         InfoL << "Close udp server [" << _socket->get_local_ip() << "]: " << _socket->get_local_port();
     }
     _timer.reset();
@@ -64,10 +70,10 @@ UdpServer::~UdpServer() {
 }
 
 void UdpServer::start_l(uint16_t port, const std::string &host) {
+    setupEvent();
     //主server才创建session map，其他cloned server共享之
     _session_mutex = std::make_shared<std::recursive_mutex>();
     _session_map = std::make_shared<std::unordered_map<PeerIdType, SessionHelper::Ptr> >();
-
     if (!_socket->bindUdpSock(port, host.c_str())) {
         // udp 绑定端口失败, 可能是由于端口占用或权限问题
         std::string err = (StrPrinter << "Bind udp socket on " << host << " " << port << " failed: " << get_uv_errmsg(true));
@@ -112,6 +118,7 @@ void UdpServer::cloneFrom(const UdpServer &that) {
     if (!that._socket) {
         throw std::invalid_argument("UdpServer::cloneFrom other with null socket");
     }
+    setupEvent();
     // clone callbacks
     _on_create_socket = that._on_create_socket;
     _session_alloc = that._session_alloc;
@@ -202,7 +209,7 @@ void UdpServer::onManagerSession() {
     });
 }
 
-const Session::Ptr &UdpServer::getOrCreateSession(const UdpServer::PeerIdType &id, const Buffer::Ptr &buf, sockaddr *addr, int addr_len, bool &is_new) {
+Session::Ptr UdpServer::getOrCreateSession(const UdpServer::PeerIdType &id, const Buffer::Ptr &buf, sockaddr *addr, int addr_len, bool &is_new) {
     {
         //减小临界区
         std::lock_guard<std::recursive_mutex> lock(*_session_mutex);
@@ -217,7 +224,7 @@ const Session::Ptr &UdpServer::getOrCreateSession(const UdpServer::PeerIdType &i
 
 static Session::Ptr s_null_session;
 
-const Session::Ptr &UdpServer::createSession(const PeerIdType &id, const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
+Session::Ptr UdpServer::createSession(const PeerIdType &id, const Buffer::Ptr &buf, struct sockaddr *addr, int addr_len) {
     auto socket = createSocket(_poller, buf, addr, addr_len);
     if (!socket) {
         //创建socket失败，本次onRead事件收到的数据直接丢弃
@@ -226,7 +233,7 @@ const Session::Ptr &UdpServer::createSession(const PeerIdType &id, const Buffer:
 
     auto addr_str = string((char *) addr, addr_len);
     std::weak_ptr<UdpServer> weak_self = std::dynamic_pointer_cast<UdpServer>(shared_from_this());
-    auto session_creator = [this, weak_self, socket, addr_str, id]() -> const Session::Ptr & {
+    auto session_creator = [this, weak_self, socket, addr_str, id]() -> Session::Ptr {
         auto server = weak_self.lock();
         if (!server) {
             return s_null_session;
@@ -239,6 +246,7 @@ const Session::Ptr &UdpServer::createSession(const PeerIdType &id, const Buffer:
             return it->second->session();
         }
 
+        assert(_socket);
         socket->bindUdpSock(_socket->get_local_port(), _socket->get_local_ip());
         socket->bindPeerAddr((struct sockaddr *) addr_str.data(), addr_str.size());
 
